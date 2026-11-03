@@ -405,17 +405,20 @@ function objectColour(x, y, z, i, out) {
 
 // Cost is ~ pixels × bounces, so resolution is the knob that keeps fps up.
 // Drop quickly when slow; climb back slowly (after 2 good seconds).
+// The resize is applied at the start of the next frame: resizing the canvas
+// clears it, and doing that after a render would show one black frame.
 let goodSeconds = 0;
+let resizePending = false;
 function adaptQuality(fps) {
   if (fps < 48 && activeScale > 0.35) {
     activeScale = Math.max(0.35, activeScale * 0.85);
     goodSeconds = 0;
-    resize();
+    resizePending = true;
   } else if (fps > 57 && activeScale < state.renderScale) {
     if (++goodSeconds >= 2) {
       activeScale = Math.min(state.renderScale, activeScale * 1.08);
       goodSeconds = 0;
-      resize();
+      resizePending = true;
     }
   } else {
     goodSeconds = 0;
@@ -464,7 +467,7 @@ const hud = document.getElementById('hud');
 let uiVisible = true;
 function setUiVisible(v) {
   uiVisible = v;
-  ui.gui.domElement.style.display = v ? '' : 'none';
+  ui.panel.hidden = !v;
   hud.style.display = v ? '' : 'none';
 }
 function toggleFullscreen() {
@@ -501,6 +504,7 @@ window.__sim = {
 };
 
 renderer.setAnimationLoop((now) => {
+  if (resizePending) { resizePending = false; resize(); }
   controls.update();
   camera.updateMatrixWorld();
   u.uCamPos.value.copy(camera.position);
