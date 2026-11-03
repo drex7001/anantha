@@ -9,6 +9,7 @@
 // them in the same order on every bounce (cheaper than texture fetches).
 // Material: 0 neon (emits colour), 1 matte (lit by the mirror's mean light), 2 chrome.
 import { human, quadruped, bird, fish, makeTree, tree, mulberry32 } from './creatures.js';
+import { MODEL_DEFS } from './models.js';
 import { isInside } from './shapes.js';
 import { linearTexture } from './textures.js';
 
@@ -29,42 +30,72 @@ const KINDS = {
   spheres: { albedo: [0.8, 0.8, 0.85], own: [0.9, 0.9, 1.0] },
 };
 
-// path: walk (on the ground, circling), fly / swim (circling in the air), static
+// Scene entries:
+//   { model: name, ... }  a downloaded model (models.js)
+//   { kind: name, ... }   a procedural capsule creature, fireflies or chrome spheres
+// path: walk (on the ground, circling), swim (circling in the air), static (pos: [x, z])
 // lane: circle radius as a fraction of the walk radius; height: fraction of the interior height
+// mat: neon | matte | chrome (models default to matte, showing their own colours)
 export const SCENES = {
   'None': [],
-  'Neon deer': [{ kind: 'deer', path: 'walk', mat: 'neon' }],
+  'Deer herd': [
+    { model: 'stag', path: 'walk' },
+    { model: 'deer', path: 'walk', lane: 0.7, phase: 1.3 },
+    { model: 'deer', path: 'walk', lane: 1.25, phase: 3.4 },
+    { kind: 'fireflies' },
+  ],
+  'Horses': [
+    { model: 'horse', path: 'walk' },
+    { model: 'horse', path: 'walk', lane: 0.6, phase: Math.PI, dir: -1 },
+  ],
+  'Fox in the forest': [
+    { model: 'tree1', path: 'static', pos: [-1.15, 1.1], scale: 0.85 },
+    { model: 'tree2', path: 'static', pos: [1.15, -1.1], yaw: 1.2, scale: 0.85 },
+    { model: 'tree1', path: 'static', pos: [1.1, 1.15], yaw: 2.5, scale: 0.7 },
+    { model: 'fox', path: 'walk', lane: 0.6 },
+    { kind: 'fireflies' },
+  ],
   'People walking': [
+    { model: 'man', path: 'walk' },
+    { model: 'woman', path: 'walk', lane: 0.6, phase: Math.PI, dir: -1 },
+  ],
+  'Pigeons': [
+    { model: 'pigeon', path: 'walk', lane: 0.35 },
+    { model: 'pigeon', path: 'walk', lane: 0.55, phase: 2.0, dir: -1 },
+    { model: 'pigeon', path: 'walk', lane: 0.75, phase: 4.0 },
+    { model: 'pigeon', path: 'walk', lane: 0.95, phase: 1.0, dir: -1 },
+  ],
+  'Clownfish': [
+    { model: 'clownfish', path: 'swim', height: 0.35, lane: 0.9 },
+    { model: 'clownfish', path: 'swim', height: 0.5, phase: 1.6, lane: 0.55, dir: -1 },
+    { model: 'clownfish', path: 'swim', height: 0.65, phase: 3.1, lane: 1.05 },
+    { model: 'clownfish', path: 'swim', height: 0.45, phase: 4.7, lane: 0.75 },
+    { model: 'clownfish', path: 'swim', height: 0.58, phase: 5.5, lane: 0.35, dir: -1 },
+  ],
+  'Chrome spheres': [{ kind: 'spheres', count: 7 }],
+  'Nature (everything)': [
+    { model: 'tree1', path: 'static', pos: [-1.15, -1.1], scale: 0.85 },
+    { model: 'tree2', path: 'static', pos: [1.15, 1.1], yaw: 0.7, scale: 0.85 },
+    { model: 'deer', path: 'walk', lane: 0.85 },
+    { model: 'fox', path: 'walk', lane: 0.5, phase: 2.2, dir: -1 },
+    { model: 'pigeon', path: 'walk', lane: 0.3, phase: 4.0 },
+    { kind: 'fireflies' },
+  ],
+  // lightweight versions built from capsules (fast on any GPU)
+  'Simple · neon deer': [{ kind: 'deer', path: 'walk', mat: 'neon' }],
+  'Simple · people': [
     { kind: 'human', path: 'walk', mat: 'matte' },
     { kind: 'human', path: 'walk', mat: 'matte', phase: Math.PI, lane: 0.55, dir: -1 },
   ],
-  'Dog & owner': [
-    { kind: 'human', path: 'walk', mat: 'neon' },
-    { kind: 'dog', path: 'walk', mat: 'neon', phase: 0.35, lane: 1.25 },
-  ],
-  'Forest & fireflies': [
+  'Simple · forest': [
     { kind: 'tree', path: 'static', pos: [-0.45, 0.2], seed: 3 },
     { kind: 'tree', path: 'static', pos: [0.5, -0.25], seed: 11 },
     { kind: 'fireflies' },
   ],
-  'Birds': [
-    { kind: 'bird', path: 'fly', height: 0.62 },
-    { kind: 'bird', path: 'fly', height: 0.75, phase: 2.1, lane: 0.7 },
-    { kind: 'bird', path: 'fly', height: 0.5, phase: 4.2, lane: 1.15, dir: -1 },
-  ],
-  'Floating fish': [
-    { kind: 'fish', path: 'swim', height: 0.35 },
-    { kind: 'fish', path: 'swim', height: 0.5, phase: 1.6, lane: 0.6, dir: -1 },
-    { kind: 'fish', path: 'swim', height: 0.65, phase: 3.1, lane: 1.1 },
-    { kind: 'fish', path: 'swim', height: 0.45, phase: 4.7, lane: 0.85 },
-  ],
-  'Chrome spheres': [{ kind: 'spheres', count: 7 }],
-  'Nature (everything)': [
-    { kind: 'tree', path: 'static', pos: [-0.35, -0.3], seed: 5 },
-    { kind: 'deer', path: 'walk', mat: 'neon', lane: 1.0 },
-    { kind: 'bird', path: 'fly', height: 0.72, phase: 1.0, lane: 0.8 },
-    { kind: 'bird', path: 'fly', height: 0.6, phase: 3.5, lane: 1.1, dir: -1 },
-    { kind: 'fireflies' },
+  'Simple · birds': [
+    { kind: 'bird', path: 'swim', height: 0.62 },
+    { kind: 'bird', path: 'swim', height: 0.75, phase: 2.1, lane: 0.7 },
+    { kind: 'bird', path: 'swim', height: 0.5, phase: 4.2, lane: 1.15, dir: -1 },
   ],
 };
 
@@ -92,6 +123,9 @@ export class InsideScene {
     this.R = 0.3 * Math.min(W, D);
     this.trees = new Map();
     for (const d of this.defs) if (d.kind === 'tree') this.trees.set(d.seed, makeTree(d.seed));
+    // downloaded models load in the background and appear when ready
+    this.modelDefs = this.defs.filter((d) => d.model);
+    this.models?.setInstances(this.modelDefs.map((d) => d.model));
     const rnd = mulberry32(42);
     this.flies = Array.from({ length: 64 }, () => ({
       f: [0.11 + rnd() * 0.2, 0.09 + rnd() * 0.2, 0.13 + rnd() * 0.2], p: [rnd() * 7, rnd() * 7, rnd() * 7],
@@ -166,6 +200,7 @@ export class InsideScene {
     };
 
     for (const d of this.defs) {
+      if (d.model) continue; // downloaded models are handled below
       const K = KINDS[d.kind];
       const phase0 = d.phase || 0, lane = d.lane || 1, dir = d.dir || 1;
       if (d.kind === 'fireflies') { this.#fireflies(o, emit); continue; }
@@ -190,6 +225,31 @@ export class InsideScene {
     this.numObjects = no;
     this.numPrims = np;
     this.primTex.needsUpdate = true;
+
+    // downloaded models: same paths, posed and traced by models.js
+    if (this.models) {
+      this.models.update(this.modelDefs.map((d, i) => {
+        const M = MODEL_DEFS[d.model];
+        const sc = s0 * (d.scale || 1);
+        const ph = d.phase || 0;
+        let x = 0, y = ground, z = 0, yaw = d.yaw || 0;
+        if (d.path === 'static') {
+          x = d.pos[0] * this.R;
+          z = d.pos[1] * this.R;
+        } else {
+          const r = this.R * (d.lane || 1), dir = d.dir || 1;
+          const th = ph + (dir * t * M.speed * sc) / Math.max(r, 1e-3); // feet roughly match the ground
+          x = Math.cos(th) * r;
+          z = Math.sin(th) * r;
+          yaw = Math.atan2(-dir * Math.sin(th), dir * Math.cos(th)) + (M.yaw || 0);
+          if (d.path === 'swim') y = this.min.y + d.height * H + 0.04 * H * Math.sin(t * 0.7 + ph);
+        }
+        const mat = o.material !== 'designed' ? o.material : d.mat || 'matte';
+        const neon = mat === 'neon' && o.colour === 'pattern'
+          ? o.colorFn(x, y + 0.5 * M.height * sc, z, 900 + i, tmpC).map((v) => v * o.gain) : null;
+        return { x, y, z, yaw, scale: sc, time: t + ph * 0.37, material: MAT[mat], neon, gain: o.gain };
+      }));
+    }
   }
 
   #fireflies(o, emit) {

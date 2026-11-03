@@ -10,6 +10,7 @@ import { buildLeds, updateLedColors, hueMatrix } from './leds.js';
 import { PATTERNS, hexToLinear } from './patterns.js';
 import { AudioEngine, MAX_FLASH_HZ } from './audio.js';
 import { InsideScene, SCENES } from './inside.js';
+import { ModelSystem } from './models.js';
 import { createMirrorMaterial, MAX_PLANES } from './mirrorShader.js';
 import { createUI } from './ui.js';
 import { createEditor } from './editor.js';
@@ -66,7 +67,8 @@ export const state = {
   objScale: 1,
   animSpeed: 1,
   fireflies: 24,
-  objDepth: 10,            // objects are traced for this many bounces
+  objDepth: 6,             // objects are traced for this many bounces
+  objLight: 3,             // how strongly the LEDs light matte objects
   // water floor
   water: false,
   waterLevel: 0.05,        // fraction of the interior height
@@ -142,6 +144,12 @@ let autoExp = 1; // auto-exposure factor, see meterExposure()
 const insideCache = { pos: new THREE.Vector3(Infinity, 0, 0), value: false };
 const audio = new AudioEngine();
 const inside = new InsideScene();
+const models = new ModelSystem();
+inside.models = models;
+models.onTexturesChanged = () => {
+  u.uMTriTex.value = models.triTex;
+  u.uMNodeTex.value = models.nodeTex;
+};
 const patternParams = { speed: 1, hueSpread: 1, color: [1, 0, 0], extent: 1, audio: audio.state };
 let rBoost = 0; // audio: the mirrors "breathe" with the music
 
@@ -208,7 +216,7 @@ function rebuildShape() {
   inside.setup(state.scene, shape);
 }
 
-const WATER_SCENES = ['Floating fish', 'Nature (everything)'];
+const WATER_SCENES = ['Clownfish', 'Nature (everything)'];
 export function setScene() {
   inside.setup(state.scene, shape);
   if (WATER_SCENES.includes(state.scene)) state.water = true;
@@ -223,7 +231,7 @@ export function resetView() {
   const def = SHAPES[state.shape];
   controls.target.set(0, 0, 0);
   if (def.inside) {
-    camera.position.set(0.25, 0.0, 0.6);
+    camera.position.set(0.2, 0.15, 1.25); // near a wall, outside the walking paths
   } else {
     const dir = new THREE.Vector3(...(def.view || [0.55, 0.35, 1])).normalize();
     camera.position.copy(dir.multiplyScalar(Math.max(shape.radius, state.size / 2) * 3.4));
@@ -393,6 +401,12 @@ u.uPrimTex.value = inside.primTex;
 u.uObjS.value = inside.objS;
 u.uObjR.value = inside.objR;
 u.uSph.value = inside.sph;
+u.uMA.value = models.A;
+u.uMB.value = models.B;
+u.uMC.value = models.C;
+u.uMD.value = models.D;
+u.uME.value = models.E;
+models.onTexturesChanged();
 
 // Colour of a neon object when it follows the LED pattern: a stand-in LED at the
 // object's position, with u going round the room so patterns sweep around it.
@@ -496,7 +510,7 @@ addEventListener('pointermove', () => {
   }
 });
 let frames = 0, frameNo = 0, lastHud = performance.now();
-const stats = { fps: 0, ms: 0 };
+const stats = { fps: 0, ms: 0, cpuMs: 0 }; // cpuMs: JS work per frame (smoothed)
 window.__sim = {
   state, stats, actions, custom, audio, inside,
   get shape() { return shape; },
@@ -504,6 +518,7 @@ window.__sim = {
 };
 
 renderer.setAnimationLoop((now) => {
+  const cpuStart = performance.now();
   if (resizePending) { resizePending = false; resize(); }
   controls.update();
   camera.updateMatrixWorld();
@@ -543,11 +558,14 @@ renderer.setAnimationLoop((now) => {
     });
   }
   u.uNumObjects.value = state.scene !== 'None' ? inside.numObjects : 0;
+  u.uNumModels.value = state.scene !== 'None' ? models.count : 0;
   u.uObjDepth.value = state.objDepth;
+  u.uObjLight.value = state.objLight;
   u.uNeonIntensity.value = state.neonIntensity;
   u.uNeonDots.value = state.neonDots ? Math.max(0.004, 0.035 * inside.baseScale * state.objScale) : 0;
   if (state.autoExposure && frameNo % 8 === 0) meterExposure();
   else if (!state.autoExposure && autoExp !== 1) { autoExp = 1; syncUniforms(); }
+  stats.cpuMs += (performance.now() - cpuStart - stats.cpuMs) * 0.1;
   composer.render();
 
   frameNo++;
@@ -558,7 +576,9 @@ renderer.setAnimationLoop((now) => {
     if (state.autoQuality) adaptQuality(stats.fps);
     const w = renderer.domElement.width, h = renderer.domElement.height;
     const tracer = shape.mode === 'mesh' ? `BVH ${shape.tris.count} tris` : 'convex';
-    const objs = u.uNumObjects.value ? ` · ${inside.numObjects} objects / ${inside.numPrims} capsules` : '';
+    const objs = (u.uNumObjects.value ? ` · ${inside.numObjects} objects / ${inside.numPrims} capsules` : '') +
+      (u.uNumModels.value ? ` · ${models.count} models / ${models.tris} tris` : '') +
+      (models.pending ? ' · loading models…' : '');
     const snd = A.active ? ` · ♪ ${audio.name} · ${A.beatsPerSec.toFixed(1)} beats/s${state.calm ? ' (calm)' : ''}` : '';
     hud.textContent =
       `${stats.fps.toFixed(0)} fps · ${w}×${h} · ${tracer} · ${shape.planes.length} faces · ` +

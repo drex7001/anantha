@@ -111,6 +111,7 @@ export function createUI(state, a, shapeNames, patternNames, sceneNames, audio) 
   mo.add(state, 'animSpeed', 0, 3, 0.01).name('Animation speed');
   mo.add(state, 'fireflies', 0, 64, 1).name('Fireflies');
   mo.add(state, 'objDepth', 1, 48, 1).name('Reflection depth');
+  lk.add(state, 'objLight', 0, 12, 0.1).name('Lighting');
   const wa = g4.addFolder('Water floor');
   wa.add(state, 'water').name('Water');
   wa.add(state, 'waterLevel', 0.01, 0.5, 0.01).name('Level');

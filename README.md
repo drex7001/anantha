@@ -28,10 +28,17 @@ endless tunnel of LEDs.
   - A far-field glow that estimates the bounces beyond the trace limit.
   - Auto exposure.
   - Auto quality, which adapts the resolution to keep the frame rate up.
-- **Inside the mirror.** Procedural creatures and nature are reflected forever.
-  No downloaded models are used; everything is built from capsules.
-  - Scenes: neon deer, people walking, dog and owner, forest with fireflies,
-    birds, floating fish, chrome spheres, and "Nature" (everything together).
+- **Inside the mirror.** Animated animals, people and trees, reflected forever.
+  - Scenes:
+    - deer herd, horses, fox in the forest, people walking, pigeons and
+      clownfish
+    - chrome spheres
+    - "Nature", with everything together
+    - lightweight "Simple" versions built from capsules
+  - The models are low-poly CC0 models by
+    [Quaternius](https://quaternius.com). They are skinned on the CPU every
+    frame and traced through per-instance BVHs that are refitted every frame
+    (see `public/models/quaternius/CREDITS.md`).
   - Materials:
     - neon: glowing glass
     - matte: lit by the LEDs' mean light
@@ -85,6 +92,8 @@ an Intel UHD 630 (integrated GPU).
 | `src/audio.js` | Web Audio analysis: bands, spectrum, beat detection, flash limiter |
 | `src/creatures.js` | Procedural rigs: person, deer/dog, bird, fish, tree |
 | `src/inside.js` | Scenes inside the mirror: placement, animation, GPU packing |
+| `src/models.js` | glTF models: fast CPU skinning, BVH build + per-frame refit, GPU packing |
+| `src/panel.css` | Settings panel theme |
 | `src/importer.js` | STL / OBJ / GLB import |
 | `src/main.js` | Renderer, bloom, auto quality and exposure, far-field glow, full screen |
 | `src/ui.js` | Control panel (lil-gui) |

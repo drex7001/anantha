@@ -64,6 +64,17 @@ uniform int uObjDepth;              // trace objects for this many bounces
 uniform vec4 uObjS[32];             // bounding sphere (centre, radius)
 uniform vec4 uObjR[32];             // (firstPrim, primCount, 0 or 1 + first sphere in uSph, material)
 uniform vec4 uSph[96];              // spheres of spheres-only objects (centre, radius)
+
+// downloaded models (models.js): per-instance BVH in local space
+uniform int uNumModels;
+uniform sampler2D uMTriTex;         // 3 texels/tri: (v0, packed colour) (e1) (e2)
+uniform sampler2D uMNodeTex;        // 2 texels/node: (min, a) (max, count)
+uniform vec4 uMA[16];               // (position, scale)
+uniform vec4 uMB[16];               // (cos yaw, sin yaw, node offset, tri offset)
+uniform vec4 uMC[16];               // world bounding sphere
+uniform vec4 uMD[16];               // (material, neon colour from pattern?, 0, 0)
+uniform vec4 uME[16];               // neon colour when following the pattern
+uniform float uObjLight;            // how strongly the LEDs light matte objects
 uniform sampler2D uPrimTex;         // 3 texels/capsule: (a, r) (b, material) (colour, 0)
 uniform float uNeonIntensity;
 uniform float uNeonDots;            // LED spacing along neon tubes (m); 0 = continuous tube
@@ -326,6 +337,73 @@ int traceObjects(vec3 ro, vec3 rd, float tMax, float fp, out float tHit) {
   return hit;
 }
 
+// ---------------- downloaded models ----------------
+// Nearest model triangle closer than tHit. The ray is moved into each
+// instance's local space (inverse yaw + scale, direction not renormalised so t
+// stays the same), then that instance's BVH is walked.
+bool traceModels(vec3 ro, vec3 rd, inout float tHit, out int model, out int tri) {
+  model = -1;
+  tri = -1;
+  for (int m = 0; m < 16; m++) {
+    if (m >= uNumModels) break;
+    vec4 C = uMC[m];
+    vec3 oc = ro - C.xyz;
+    float b = dot(oc, rd), h = b * b - dot(oc, oc) + C.w * C.w;
+    if (h < 0.0) continue;
+    h = sqrt(h);
+    if (-b - h > tHit || -b + h < 0.0) continue;  // bounding sphere missed
+
+    vec4 A = uMA[m], B = uMB[m];
+    vec3 o = ro - A.xyz;
+    float is = 1.0 / A.w;
+    vec3 lo = vec3(o.x * B.x - o.z * B.y, o.y, o.x * B.y + o.z * B.x) * is;
+    vec3 ld = vec3(rd.x * B.x - rd.z * B.y, rd.y, rd.x * B.y + rd.z * B.x) * is;
+    int nodeOff = int(B.z + 0.5), triOff = int(B.w + 0.5);
+
+    vec3 inv = 1.0 / mix(ld, vec3(1e-9), lessThan(abs(ld), vec3(1e-9)));
+    int stack[32];
+    int sp = 0;
+    stack[sp++] = 0;
+    for (int it = 0; it < 1024; it++) {
+      if (sp == 0) break;
+      int ni = nodeOff + stack[--sp];
+      vec4 N0 = tx(uMNodeTex, 2 * ni), N1 = tx(uMNodeTex, 2 * ni + 1);
+      vec3 t0 = (N0.xyz - lo) * inv, t1 = (N1.xyz - lo) * inv;
+      vec3 tmn = min(t0, t1), tmx = max(t0, t1);
+      float tn = max(max(tmn.x, tmn.y), tmn.z), tf = min(min(tmx.x, tmx.y), tmx.z);
+      if (tf < max(tn, 0.0) || tn > tHit) continue;
+      int cnt = int(N1.w + 0.5), idx = int(N0.w + 0.5);
+      if (cnt == 0) {
+        if (sp < 31) { stack[sp++] = idx; stack[sp++] = ni - nodeOff + 1; }
+        continue;
+      }
+      for (int k = 0; k < LEAF_SIZE; k++) {
+        if (k >= cnt) break;
+        int ti = triOff + idx + k;
+        vec3 v0 = tx(uMTriTex, 3 * ti).xyz, e1 = tx(uMTriTex, 3 * ti + 1).xyz, e2 = tx(uMTriTex, 3 * ti + 2).xyz;
+        vec3 pv = cross(ld, e2);
+        float det = dot(e1, pv);
+        if (abs(det) < 1e-14) continue;
+        float id = 1.0 / det;
+        vec3 tv = lo - v0;
+        float u = dot(tv, pv) * id;
+        if (u < 0.0 || u > 1.0) continue;
+        vec3 qv = cross(tv, e1);
+        float v = dot(ld, qv) * id;
+        if (v < 0.0 || u + v > 1.0) continue;
+        float t = dot(e2, qv) * id;
+        if (t > uEps * 0.1 && t < tHit) { tHit = t; model = m; tri = ti; }
+      }
+    }
+  }
+  return model >= 0;
+}
+
+vec3 unpackColour(float p) {
+  vec3 c = vec3(floor(p / 65536.0), mod(floor(p / 256.0), 256.0), mod(p, 256.0)) / 255.0;
+  return c * c; // stored sqrt-encoded
+}
+
 // ---------------- water: rippled plane y = uWaterY ----------------
 vec2 waveGrad(vec2 x, vec2 dir, float k, float w) { return dir * k * cos(dot(dir, x) * k - w * uTime); }
 
@@ -387,6 +465,11 @@ void main() {
     // (objects are only traced for the first uObjDepth bounces: deeper copies are tiny)
     float tO = t;
     int prim = uNumObjects > 0 && b < uObjDepth ? traceObjects(p, rd, t, FOOTPRINT, tO) : -1;
+    int model = -1, mtri = -1;
+    if (uNumModels > 0 && b < uObjDepth) {
+      float tM = tO;
+      if (traceModels(p, rd, tM, model, mtri)) { tO = tM; prim = -1; }
+    }
     float tW = 1e20;
     if (uWater && abs(rd.y) > 1e-6) {
       float tw = (uWaterY - p.y) / rd.y;
@@ -411,44 +494,60 @@ void main() {
       continue;
     }
 
-    if (prim >= 0) {
-      vec4 A = tx(uPrimTex, 3 * prim), B = tx(uPrimTex, 3 * prim + 1);
-      vec3 colr = tx(uPrimTex, 3 * prim + 2).rgb;
+    if (prim >= 0 || model >= 0) {
       p += rd * tO;
       travelled += tO;
-      vec3 ba = B.xyz - A.xyz;
-      float bb = dot(ba, ba);
-      float s = bb > 1e-12 ? clamp(dot(p - A.xyz, ba) / bb, 0.0, 1.0) : 0.0;
-      vec3 no = normalize(p - (A.xyz + s * ba));
-      int mat = int(B.w + 0.5);
-      if (mat == 0) {                            // neon: a glowing glass tube – bright rim, see-through core
-        float fp = FOOTPRINT;
-        float w = A.w / (A.w + 0.5 * fp);        // energy-conserving when thinner than a pixel
-        float dots = 1.0;
+      float fp = FOOTPRINT;
+      vec3 colr, no;
+      int mat;
+      float w = 1.0, dots = 1.0, curv = 0.0;     // curv: radius of a curved surface (0 = flat)
+      if (model >= 0) {
+        vec4 V0 = tx(uMTriTex, 3 * mtri);
+        vec3 nl = normalize(cross(tx(uMTriTex, 3 * mtri + 1).xyz, tx(uMTriTex, 3 * mtri + 2).xyz));
+        vec4 MB = uMB[model], MD = uMD[model];
+        no = vec3(nl.x * MB.x + nl.z * MB.y, nl.y, -nl.x * MB.y + nl.z * MB.x);
+        if (dot(no, rd) > 0.0) no = -no;         // triangles are two-sided
+        colr = unpackColour(V0.w);
+        mat = int(MD.x + 0.5);
+        if (mat == 0) colr = MD.y > 0.5 ? uME[model].rgb : MD.z * colr / max(max(colr.r, colr.g), max(colr.b, 1e-3));
+      } else {
+        vec4 A = tx(uPrimTex, 3 * prim), B = tx(uPrimTex, 3 * prim + 1);
+        colr = tx(uPrimTex, 3 * prim + 2).rgb;
+        vec3 ba = B.xyz - A.xyz;
+        float bb = dot(ba, ba);
+        float s = bb > 1e-12 ? clamp(dot(p - A.xyz, ba) / bb, 0.0, 1.0) : 0.0;
+        no = normalize(p - (A.xyz + s * ba));
+        mat = int(B.w + 0.5);
+        curv = A.w;
+        w = A.w / (A.w + 0.5 * fp);              // thin neon tubes stay energy-conserving
         float len = sqrt(bb);
         if (uNeonDots > 0.0 && len > 1e-5) {     // LED-string look: bright dots along the tube
           float d = abs(fract(s * len / uNeonDots) - 0.5) * uNeonDots;
           dots = 0.12 + 0.88 * (1.0 - smoothstep(A.w * 0.9, A.w * 0.9 + fp + 1e-5, d));
         }
+      }
+      if (mat == 0) {                            // neon: glowing glass – bright rim, see-through core
         float rim = pow(1.0 - abs(dot(no, rd)), 2.0);
         col += thr * colr * uNeonIntensity * w * dots * (0.2 + 1.4 * rim);
         thr *= 1.0 - 0.45 * w;                   // the glass dims what is behind it a little
-        p += rd * uEps;                          // and the ray carries on through the tube
+        p += rd * uEps;                          // and the ray carries on through
         continue;
       } else if (mat == 1) {                     // matte: lit by the mirror's mean light
-        float lam = 0.55 + 0.45 * max(no.y, 0.0);
+        float lam = 0.45 + 0.55 * max(no.y, 0.0);
         float rim = pow(1.0 - abs(dot(no, rd)), 3.0);
-        col += thr * uAmbient * (colr * lam + 0.3 * rim);
+        col += thr * uAmbient * uObjLight * (colr * lam + 0.12 * rim);
         reachedLimit = false;
         break;
-      } else {                                   // chrome: mirror ball
+      } else {                                   // chrome (polished: a hint of diffuse keeps the shape readable)
+        col += thr * uAmbient * uObjLight * 0.08;
         thr *= colr;
         rd = reflect(rd, no);
         p += no * uEps;
         face = -1;
-        float fpc = FOOTPRINT;                   // a convex mirror of radius r spreads the cone by 2w/r
-        spread += 2.0 * fpc / max(A.w, 1e-4);
-        fpBase = fpc; tBase = travelled;
+        if (curv > 0.0) {                        // a convex mirror of radius r spreads the cone by 2w/r
+          spread += 2.0 * fp / curv;
+          fpBase = fp; tBase = travelled;
+        }
         continue;
       }
     }
@@ -513,6 +612,15 @@ export function createMirrorMaterial() {
       uTime: { value: 0 },
       uNumObjects: { value: 0 },
       uObjDepth: { value: 12 },
+      uNumModels: { value: 0 },
+      uMTriTex: { value: null },
+      uMNodeTex: { value: null },
+      uMA: { value: new Float32Array(16 * 4) },
+      uMB: { value: new Float32Array(16 * 4) },
+      uMC: { value: new Float32Array(16 * 4) },
+      uMD: { value: new Float32Array(16 * 4) },
+      uME: { value: new Float32Array(16 * 4) },
+      uObjLight: { value: 3 },
       uObjS: { value: new Float32Array(32 * 4) },
       uObjR: { value: new Float32Array(32 * 4) },
       uSph: { value: new Float32Array(96 * 4) },
