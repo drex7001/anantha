@@ -56,6 +56,25 @@ uniform float uPixelAngle;
 uniform float uEnv;
 uniform float uEps;
 uniform vec3 uTail;
+uniform float uTime;
+
+// objects inside the mirror (inside.js)
+uniform int uNumObjects;
+uniform int uObjDepth;              // trace objects for this many bounces
+uniform vec4 uObjS[32];             // bounding sphere (centre, radius)
+uniform vec4 uObjR[32];             // (firstPrim, primCount, 0 or 1 + first sphere in uSph, material)
+uniform vec4 uSph[96];              // spheres of spheres-only objects (centre, radius)
+uniform sampler2D uPrimTex;         // 3 texels/capsule: (a, r) (b, material) (colour, 0)
+uniform float uNeonIntensity;
+uniform float uNeonDots;            // LED spacing along neon tubes (m); 0 = continuous tube
+uniform vec3 uAmbient;              // mean light inside the mirror (lights matte objects)
+
+// water floor
+uniform bool uWater;
+uniform float uWaterY;
+uniform float uWaterMin;            // reflectance looking straight down
+uniform float uWaterAmp;            // ripple slope
+uniform float uWaterFreq;           // ripples per metre
 
 varying vec2 vUv;
 
@@ -231,6 +250,102 @@ bool enterShape(vec3 ro, vec3 rd, out float t, out vec3 n, out int f, out int k)
 bool nextHit(vec3 p, vec3 rd, int face, out float t, out vec3 n, out int f, out int k) { return hitMesh(p, rd, t, n, f, k); }
 #endif
 
+// ---------------- objects: capsules (spheres when a == b) ----------------
+// ray / capsule (Inigo Quilez); returns t or -1
+float capsuleHit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float r) {
+  vec3 ba = pb - pa, oa = ro - pa;
+  float baba = dot(ba, ba), bard = dot(ba, rd), baoa = dot(ba, oa);
+  float rdoa = dot(rd, oa), oaoa = dot(oa, oa);
+  float a = baba - bard * bard;
+  if (a > 1e-12) {
+    float b = baba * rdoa - baoa * bard;
+    float c = baba * oaoa - baoa * baoa - r * r * baba;
+    float h = b * b - a * c;
+    if (h < 0.0) return -1.0;
+    float t = (-b - sqrt(h)) / a;
+    float y = baoa + t * bard;
+    if (y > 0.0 && y < baba) return t;          // body
+    vec3 oc = y <= 0.0 ? oa : ro - pb;          // end caps
+    float b2 = dot(rd, oc), c2 = dot(oc, oc) - r * r, h2 = b2 * b2 - c2;
+    return h2 > 0.0 ? -b2 - sqrt(h2) : -1.0;
+  }
+  // ray parallel to the axis (or a sphere): test both end spheres
+  float best = -1.0;
+  for (int i = 0; i < 2; i++) {
+    vec3 oc = i == 0 ? oa : ro - pb;
+    float b2 = dot(rd, oc), h2 = b2 * b2 - dot(oc, oc) + r * r;
+    if (h2 > 0.0) { float t = -b2 - sqrt(h2); if (t > 0.0 && (best < 0.0 || t < best)) best = t; }
+  }
+  return best;
+}
+
+// nearest capsule closer than tMax; neon tubes get a pixel-footprint margin (fp)
+int traceObjects(vec3 ro, vec3 rd, float tMax, float fp, out float tHit) {
+  tHit = tMax;
+  int hit = -1;
+  for (int o = 0; o < 32; o++) {
+    if (o >= uNumObjects) break;
+    vec4 S = uObjS[o];
+    vec3 oc = ro - S.xyz;
+    float b = dot(oc, rd), rr = S.w + fp, h = b * b - dot(oc, oc) + rr * rr;
+    if (h < 0.0) continue;
+    h = sqrt(h);
+    if (-b - h > tHit || -b + h < 0.0) continue;  // bounding sphere missed
+    vec4 R = uObjR[o];
+    int first = int(R.x + 0.5), cnt = int(R.y + 0.5);
+    if (R.z > 0.5) {
+      // spheres only (fireflies, chrome balls): uniform data and a ray/sphere test each
+      int s0 = int(R.z - 0.5);
+      float grow = R.w < 0.5 ? 0.5 * fp : 0.0; // neon spheres get the footprint margin
+      for (int i = 0; i < 96; i++) {
+        if (i >= cnt) break;
+        int pi = first + i;
+        vec4 A = uSph[s0 + i];
+        vec3 q = ro - A.xyz;
+        float r = A.w + grow, b2 = dot(q, rd), h2 = b2 * b2 - dot(q, q) + r * r;
+        if (h2 <= 0.0) continue;
+        float t = -b2 - sqrt(h2);
+        if (t > uEps * 0.1 && t < tHit) { tHit = t; hit = pi; }
+      }
+      continue;
+    }
+    for (int i = 0; i < 256; i++) {
+      if (i >= cnt) break;
+      int pi = first + i;
+      vec4 A = tx(uPrimTex, 3 * pi), B = tx(uPrimTex, 3 * pi + 1);
+      float r = A.w + (B.w < 0.5 ? 0.5 * fp : 0.0);
+      // cheap reject: the capsule's own bounding sphere
+      vec3 q = ro - 0.5 * (A.xyz + B.xyz);
+      float br = 0.5 * length(B.xyz - A.xyz) + r, qb = dot(q, rd);
+      float qh = qb * qb - dot(q, q) + br * br;
+      if (qh < 0.0 || -qb - sqrt(qh) > tHit) continue;
+      float t = capsuleHit(ro, rd, A.xyz, B.xyz, r);
+      if (t > uEps * 0.1 && t < tHit) { tHit = t; hit = pi; }
+    }
+  }
+  return hit;
+}
+
+// ---------------- water: rippled plane y = uWaterY ----------------
+vec2 waveGrad(vec2 x, vec2 dir, float k, float w) { return dir * k * cos(dot(dir, x) * k - w * uTime); }
+
+// fp = pixel footprint: ripples smaller than a pixel fade out instead of aliasing
+vec3 waterNormal(vec3 q, float fp) {
+  vec2 x = q.xz * uWaterFreq;
+  vec2 g = waveGrad(x, vec2(0.958, 0.287), 1.0, 1.1)
+         + waveGrad(x, vec2(-0.371, 0.928), 1.7, 1.6) * 0.55
+         + waveGrad(x, vec2(0.659, -0.753), 2.9, 2.3) * 0.3;
+  float d = length(x);
+  g += x / max(d, 1e-4) * cos(d * 3.0 - uTime * 2.0) * 0.45 * exp(-d * 0.12); // rings from the centre
+  float amp = uWaterAmp / (1.0 + fp * uWaterFreq * 4.0);
+  return normalize(vec3(-g.x * amp, 1.0, -g.y * amp));
+}
+
+// Pixel footprint (ray-cone width) at the current path length. Curved mirrors
+// (chrome balls, water ripples) widen the cone, so what they reflect gets
+// smoothly blurred instead of aliasing into noise.
+#define FOOTPRINT (fpBase + (travelled - tBase) * spread)
+
 void main() {
   vec2 ndc = vUv * 2.0 - 1.0;
   vec4 v = uProjInv * vec4(ndc, 1.0, 1.0);
@@ -240,6 +355,7 @@ void main() {
   vec3 col = vec3(0.0);
   vec3 thr = vec3(1.0);
   float travelled = 0.0;
+  float fpBase = 0.0, tBase = 0.0, spread = uPixelAngle;
   int face = -1;
   float t; vec3 n; int f, k;
   float a; vec3 em;
@@ -254,7 +370,7 @@ void main() {
     face = f;
     vec4 props = tx(uFaceTex, 2 * f);
     col += envColor(reflect(rd, n)) * props.z;  // room reflected on the glass
-    stripAt(p, f, k, travelled * uPixelAngle, a, em);
+    stripAt(p, f, k, FOOTPRINT, a, em);
     col += a * vec3(0.002);                     // back side of the strip
     thr *= props.y * (1.0 - a);                 // light that makes it through the glass
     p -= n * uEps;
@@ -264,7 +380,80 @@ void main() {
   for (int b = 0; b < MAX_BOUNCES; b++) {
     if (b >= uMaxBounces) break;
     if (max(thr.r, max(thr.g, thr.b)) < 0.0015) { reachedLimit = false; break; }
-    if (!nextHit(p, rd, face, t, n, f, k)) {     // escaped (open mesh)
+    bool shell = nextHit(p, rd, face, t, n, f, k);
+    if (!shell) t = 1e20;                        // escaped (open mesh) unless something is in the way
+
+    // objects and water inside the mirror, if nearer than the next face
+    // (objects are only traced for the first uObjDepth bounces: deeper copies are tiny)
+    float tO = t;
+    int prim = uNumObjects > 0 && b < uObjDepth ? traceObjects(p, rd, t, FOOTPRINT, tO) : -1;
+    float tW = 1e20;
+    if (uWater && abs(rd.y) > 1e-6) {
+      float tw = (uWaterY - p.y) / rd.y;
+      if (tw > uEps * 0.1 && tw < min(t, tO)) tW = tw;
+    }
+
+    if (tW < 1e19) {                             // water: Fresnel reflection, the rest is absorbed
+      p += rd * tW;
+      travelled += tW;
+      float side = rd.y > 0.0 ? -1.0 : 1.0;      // +1: hit from above
+      vec3 nw = waterNormal(p, FOOTPRINT) * side;
+      float c = abs(dot(rd, nw));
+      float F = 0.02 + 0.98 * pow(1.0 - c, 5.0);
+      thr *= mix(uWaterMin, 1.0, F) * vec3(0.9, 0.96, 1.0);
+      rd = reflect(rd, nw);
+      if (rd.y * side <= 0.0) rd.y = -rd.y;      // a steep ripple must not send the ray back into the water
+      p += nw * uEps;
+      face = -1;
+      float fpw = FOOTPRINT;                     // ripples spread the reflected cone a little
+      spread += 6.0 * uWaterAmp * uWaterFreq * fpw;
+      fpBase = fpw; tBase = travelled;
+      continue;
+    }
+
+    if (prim >= 0) {
+      vec4 A = tx(uPrimTex, 3 * prim), B = tx(uPrimTex, 3 * prim + 1);
+      vec3 colr = tx(uPrimTex, 3 * prim + 2).rgb;
+      p += rd * tO;
+      travelled += tO;
+      vec3 ba = B.xyz - A.xyz;
+      float bb = dot(ba, ba);
+      float s = bb > 1e-12 ? clamp(dot(p - A.xyz, ba) / bb, 0.0, 1.0) : 0.0;
+      vec3 no = normalize(p - (A.xyz + s * ba));
+      int mat = int(B.w + 0.5);
+      if (mat == 0) {                            // neon: a glowing glass tube – bright rim, see-through core
+        float fp = FOOTPRINT;
+        float w = A.w / (A.w + 0.5 * fp);        // energy-conserving when thinner than a pixel
+        float dots = 1.0;
+        float len = sqrt(bb);
+        if (uNeonDots > 0.0 && len > 1e-5) {     // LED-string look: bright dots along the tube
+          float d = abs(fract(s * len / uNeonDots) - 0.5) * uNeonDots;
+          dots = 0.12 + 0.88 * (1.0 - smoothstep(A.w * 0.9, A.w * 0.9 + fp + 1e-5, d));
+        }
+        float rim = pow(1.0 - abs(dot(no, rd)), 2.0);
+        col += thr * colr * uNeonIntensity * w * dots * (0.2 + 1.4 * rim);
+        thr *= 1.0 - 0.45 * w;                   // the glass dims what is behind it a little
+        p += rd * uEps;                          // and the ray carries on through the tube
+        continue;
+      } else if (mat == 1) {                     // matte: lit by the mirror's mean light
+        float lam = 0.55 + 0.45 * max(no.y, 0.0);
+        float rim = pow(1.0 - abs(dot(no, rd)), 3.0);
+        col += thr * uAmbient * (colr * lam + 0.3 * rim);
+        reachedLimit = false;
+        break;
+      } else {                                   // chrome: mirror ball
+        thr *= colr;
+        rd = reflect(rd, no);
+        p += no * uEps;
+        face = -1;
+        float fpc = FOOTPRINT;                   // a convex mirror of radius r spreads the cone by 2w/r
+        spread += 2.0 * fpc / max(A.w, 1e-4);
+        fpBase = fpc; tBase = travelled;
+        continue;
+      }
+    }
+
+    if (!shell) {
       col += thr * envColor(rd);
       reachedLimit = false;
       break;
@@ -273,7 +462,7 @@ void main() {
     travelled += t;
     face = f;
 
-    stripAt(p, f, k, travelled * uPixelAngle, a, em);
+    stripAt(p, f, k, FOOTPRINT, a, em);
     col += thr * a * em;
     thr *= 1.0 - a;
 
@@ -321,6 +510,21 @@ export function createMirrorMaterial() {
       uEnv: { value: 0.3 },
       uEps: { value: 1e-5 },
       uTail: { value: new THREE.Vector3() },
+      uTime: { value: 0 },
+      uNumObjects: { value: 0 },
+      uObjDepth: { value: 12 },
+      uObjS: { value: new Float32Array(32 * 4) },
+      uObjR: { value: new Float32Array(32 * 4) },
+      uSph: { value: new Float32Array(96 * 4) },
+      uPrimTex: { value: null },
+      uNeonIntensity: { value: 5 },
+      uNeonDots: { value: 0 },
+      uAmbient: { value: new THREE.Vector3() },
+      uWater: { value: false },
+      uWaterY: { value: 0 },
+      uWaterMin: { value: 0.35 },
+      uWaterAmp: { value: 0.08 },
+      uWaterFreq: { value: 6 },
     },
     vertexShader,
     fragmentShader,

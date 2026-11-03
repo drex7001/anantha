@@ -28,7 +28,30 @@ endless tunnel of LEDs.
   - A far-field glow that estimates the bounces beyond the trace limit.
   - Auto exposure.
   - Auto quality, which adapts the resolution to keep the frame rate up.
+- **Inside the mirror.** Procedural creatures and nature are reflected forever.
+  No downloaded models are used; everything is built from capsules.
+  - Scenes: neon deer, people walking, dog and owner, forest with fireflies,
+    birds, floating fish, chrome spheres, and "Nature" (everything together).
+  - Materials:
+    - neon: glowing glass
+    - matte: lit by the LEDs' mean light
+    - chrome
+  - Neon objects can take their own colours or follow the LED pattern.
+  - There is an optional LED-string look.
+- **Water floor.** Rippled water with Fresnel reflections.
+- **Audio-reactive mode.** Takes sound from a music file, the microphone or
+  tab/system audio.
+  - Bass drives brightness and bloom.
+  - Mids drive a hue shift and highs add sparkle.
+  - Beats send light pulses, and the mirrors "breathe" with the music's energy.
+  - There are 3 audio patterns: spectrum, bass wave and VU meter.
 - **Full screen.** Press `F` for full screen and `H` to hide the controls.
+
+### Photosensitivity
+
+Beat-driven flashes are limited to **3 per second**. Calm mode turns flashes
+off entirely and smooths every change. A warning is shown the first time
+audio is turned on.
 
 ## Run
 
@@ -59,6 +82,9 @@ an Intel UHD 630 (integrated GPU).
 | `src/leds.js` | LED strips → data textures, per-frame colours |
 | `src/patterns.js` | LED colour patterns |
 | `src/editor.js` | 2D outline editor |
+| `src/audio.js` | Web Audio analysis: bands, spectrum, beat detection, flash limiter |
+| `src/creatures.js` | Procedural rigs: person, deer/dog, bird, fish, tree |
+| `src/inside.js` | Scenes inside the mirror: placement, animation, GPU packing |
 | `src/importer.js` | STL / OBJ / GLB import |
 | `src/main.js` | Renderer, bloom, auto quality and exposure, far-field glow, full screen |
 | `src/ui.js` | Control panel (lil-gui) |

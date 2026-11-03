@@ -1,6 +1,6 @@
 import GUI from 'lil-gui';
 
-export function createUI(state, a, shapeNames, patternNames) {
+export function createUI(state, a, shapeNames, patternNames, sceneNames, audio) {
   const gui = new GUI({ title: 'Infinity Mirror' });
   const refresh = () => gui.controllersRecursive().forEach((c) => c.updateDisplay());
 
@@ -48,6 +48,40 @@ export function createUI(state, a, shapeNames, patternNames) {
   fPat.add(state, 'hueSpread', 0, 4, 0.01).name('hue spread').onChange(a.syncUniforms);
   fPat.addColor(state, 'color').onChange(a.syncUniforms);
   fPat.add(state, 'brightness', 0, 2, 0.01);
+
+  fMirror.close();
+  fLed.close();
+
+  const fIn = gui.addFolder('Inside: nature & creatures');
+  fIn.add(state, 'scene', sceneNames).name('scene').onChange(a.setScene);
+  fIn.add(state, 'objMaterial', {
+    'as designed': 'designed', neon: 'neon', 'matte (lit by the LEDs)': 'matte', chrome: 'chrome',
+  }).name('material');
+  fIn.add(state, 'objColour', { 'own colours': 'own', 'follow LED pattern': 'pattern' }).name('neon colours');
+  fIn.add(state, 'neonIntensity', 0.5, 20, 0.1).name('neon intensity');
+  fIn.add(state, 'neonDots').name('LED-string look');
+  fIn.add(state, 'objScale', 0.3, 2, 0.01).name('size');
+  fIn.add(state, 'animSpeed', 0, 3, 0.01).name('animation speed');
+  fIn.add(state, 'fireflies', 0, 64, 1);
+  fIn.add(state, 'objDepth', 1, 48, 1).name('reflection depth');
+  const fWater = fIn.addFolder('Water floor');
+  fWater.add(state, 'water').name('water');
+  fWater.add(state, 'waterLevel', 0.01, 0.5, 0.01).name('level');
+  fWater.add(state, 'waterReflect', 0, 1, 0.01).name('reflect');
+  fWater.add(state, 'waterWaves', 0, 3, 0.01).name('waves');
+  fWater.close();
+
+  const fAudio = gui.addFolder('Audio (music reactive)');
+  fAudio.add(a, 'loadMusic').name('♫ play a music file…');
+  fAudio.add(a, 'useMic').name('🎤 microphone');
+  fAudio.add(a, 'useTab').name('⇆ tab / system audio');
+  fAudio.add(a, 'playPause').name('play / pause');
+  fAudio.add(a, 'stopAudio').name('stop');
+  fAudio.add(state, 'reactivity', 0, 1, 0.01);
+  fAudio.add(state, 'sensitivity', 0.3, 3, 0.01).name('beat sensitivity');
+  fAudio.add(state, 'calm').name('calm mode (no flashes)');
+  for (const k of ['bass', 'mids', 'highs']) fAudio.add(audio.state, k, 0, 1).listen().disable();
+  fAudio.add(audio.state, 'beatsPerSec', 0, 4).name('beats / s').listen().disable();
 
   const fRender = gui.addFolder('Render');
   fRender.add(state, 'autoQuality').name('auto quality').onChange(a.resize);

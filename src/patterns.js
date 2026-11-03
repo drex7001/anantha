@@ -70,4 +70,28 @@ export const PATTERNS = {
   'Edge colours': (L, t, P, o) => hsv(L.e * 0.618 + t * P.speed * 0.05, 0.95, 1, o),
 
   'Solid': (L, t, P, o) => setScaled(o, P.color, 1),
+
+  // ---- audio patterns (P.audio from audio.js; all zero when no audio is playing)
+  'Audio spectrum': (L, t, P, o) => {
+    const sp = P.audio.spectrum;
+    const v = sp[Math.min(sp.length - 1, Math.floor(L.u * sp.length))];
+    hsv(0.62 - L.u * 0.62 * P.hueSpread + t * P.speed * 0.02, 1, 1, o);
+    return setScaled(o, o, 0.04 + v * v);
+  },
+
+  'Audio bass wave': (L, t, P, o) => {
+    // a shell of light expands from the centre on every beat
+    const A = P.audio;
+    const d = Math.hypot(L.x, L.y, L.z) / P.extent;
+    const ring = Math.exp(-(((d - A.sinceBeat * 1.6) / 0.18) ** 2)) * Math.exp(-A.sinceBeat * 1.2);
+    hsv(A.beatCount * 0.13 + d * 0.25 * P.hueSpread, 1, 1, o);
+    return setScaled(o, o, 0.06 + 0.8 * A.bass + ring);
+  },
+
+  'Audio VU meter': (L, t, P, o) => {
+    // every strip fills from its start with the level; green → red
+    const level = Math.min(1, P.audio.energy * 1.3);
+    hsv(0.33 * (1 - L.s), 1, 1, o);
+    return setScaled(o, o, L.s < level ? 1 : 0.03);
+  },
 };

@@ -6,8 +6,10 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { SHAPES, analyzeShape, isInside, interiorPoint, starOutline } from './shapes.js';
 import { buildBVH } from './bvh.js';
-import { buildLeds, updateLedColors } from './leds.js';
+import { buildLeds, updateLedColors, hueMatrix } from './leds.js';
 import { PATTERNS, hexToLinear } from './patterns.js';
+import { AudioEngine, MAX_FLASH_HZ } from './audio.js';
+import { InsideScene, SCENES } from './inside.js';
 import { createMirrorMaterial, MAX_PLANES } from './mirrorShader.js';
 import { createUI } from './ui.js';
 import { createEditor } from './editor.js';
@@ -55,6 +57,25 @@ export const state = {
   bloomThreshold: 0.5,
   exposure: 1,
   autoRotate: false,
+  // inside the mirror
+  scene: 'None',
+  objMaterial: 'designed', // designed | neon | matte | chrome
+  objColour: 'own',        // own | pattern
+  neonIntensity: 3,
+  neonDots: false,         // LED-string look on neon objects
+  objScale: 1,
+  animSpeed: 1,
+  fireflies: 24,
+  objDepth: 10,            // objects are traced for this many bounces
+  // water floor
+  water: false,
+  waterLevel: 0.05,        // fraction of the interior height
+  waterReflect: 0.35,      // reflectance looking straight down
+  waterWaves: 1,
+  // audio
+  reactivity: 0.7,
+  sensitivity: 1,
+  calm: false,             // no beat flashes, slow smooth changes
 };
 
 // inputs for the editor / imported shapes
@@ -119,11 +140,14 @@ let lastShape = state.shape;
 const faceAvg = { R: 0, T: 0 };
 let autoExp = 1; // auto-exposure factor, see meterExposure()
 const insideCache = { pos: new THREE.Vector3(Infinity, 0, 0), value: false };
-const patternParams = { speed: 1, hueSpread: 1, color: [1, 0, 0], extent: 1 };
+const audio = new AudioEngine();
+const inside = new InsideScene();
+const patternParams = { speed: 1, hueSpread: 1, color: [1, 0, 0], extent: 1, audio: audio.state };
+let rBoost = 0; // audio: the mirrors "breathe" with the music
 
 function applyFaces() {
-  const two = [state.twoWayR, state.twoWayT, state.twoWayR];
-  const mirror = [state.mirrorR, 0, 0.04];
+  const two = [Math.min(0.98, state.twoWayR + rBoost), state.twoWayT, state.twoWayR];
+  const mirror = [Math.min(0.995, state.mirrorR + rBoost * 0.3), 0, 0.04];
   const black = [0, 0, 0.03];
   const data = strip.faceTex.image.data;
   let r = 0, t = 0;
@@ -181,6 +205,18 @@ function rebuildShape() {
   insideCache.pos.set(Infinity, 0, 0);
   if (!shape.closed) toast('This mesh is not closed – some rays will escape through holes');
   rebuildLeds();
+  inside.setup(state.scene, shape);
+}
+
+const WATER_SCENES = ['Floating fish', 'Nature (everything)'];
+export function setScene() {
+  inside.setup(state.scene, shape);
+  if (WATER_SCENES.includes(state.scene)) state.water = true;
+  const [W, H, D] = inside.size;
+  if (state.scene !== 'None' && Math.min(W, H, D) < 0.15) {
+    toast('This shape is very thin – scenes look best in the Mirror room or the Infinity cube', 6000);
+  }
+  ui?.refresh();
 }
 
 export function resetView() {
@@ -258,12 +294,19 @@ export function syncUniforms() {
   if (strip) applyFaces();
 }
 
-// Expected light from all bounces after the last traced one. Per bounce a ray
-// hits a strip with probability p (strip area / total area) and otherwise
-// reflects with the area-weighted mean reflectivity, so the tail is a
-// geometric series:  (p·E + (1-p)·T·env) / (1 − (1-p)·R·tint).
+// Mean radiance along a ray inside the mirror. Per bounce a ray hits a strip
+// with probability p (strip area / total area) and otherwise reflects with the
+// area-weighted mean reflectivity, so it is a geometric series:
+//   (p·E + (1-p)·T·env) / (1 − (1-p)·R·tint)
+// Used for the far-field glow (light beyond the last traced bounce) and to
+// light matte objects (a diffuse surface in uniform light L shows albedo·L).
 function updateTail(avgLed) {
-  if (!state.farGlow) { u.uTail.value.set(0, 0, 0); return; }
+  const L = meanRadiance(avgLed);
+  u.uTail.value.set(...(state.farGlow ? L : [0, 0, 0]));
+  u.uAmbient.value.set(L[0] * 2.5 + 0.01, L[1] * 2.5 + 0.01, L[2] * 2.5 + 0.01);
+}
+
+function meanRadiance(avgLed) {
   const sw = stripWidth(), r = state.ledSizeMm / 1000;
   const p = Math.min(0.9, (strip.stripLenFaces * sw) / shape.totalArea);
   const rows = state.doubleStrip ? 2 : 1;
@@ -271,12 +314,11 @@ function updateTail(avgLed) {
   const k = state.ledIntensity * dotFrac + state.stripGlow;
   const env = 0.03 * state.roomLight;
   const tint = [1 - state.glassGreen, 1, 1 - state.glassGreen * 0.6];
-  const out = [0, 0, 0].map((_, c) => {
+  return [0, 0, 0].map((_, c) => {
     const emit = avgLed[c] * k + 0.004;
     const num = p * emit + (1 - p) * faceAvg.T * env;
     return num / Math.max(0.02, 1 - (1 - p) * faceAvg.R * tint[c]);
   });
-  u.uTail.value.set(out[0], out[1], out[2]);
 }
 
 // ---------- editor / import ----------
@@ -304,8 +346,37 @@ async function importFile(file) {
   }
 }
 
+// ---------- audio ----------
+let warnedFlashes = false;
+async function startAudio(start) {
+  try {
+    await start();
+    if (!warnedFlashes) {
+      warnedFlashes = true;
+      toast(`⚠ Audio-reactive lights can flash. Flashes are limited to ${MAX_FLASH_HZ} per second; ` +
+            'turn on "calm mode" if you are sensitive to flashing light.', 9000);
+    } else toast(`Audio: ${audio.name}`);
+  } catch (err) {
+    console.error(err);
+    toast(`Audio failed: ${err.message}`, 7000);
+  }
+}
+function pickAudioFile() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'audio/*';
+  input.onchange = () => input.files[0] && startAudio(() => audio.useFile(input.files[0]));
+  input.click();
+}
+
 export const actions = {
-  rebuildShape, rebuildLeds, selectShape, resetView, goInside, syncUniforms, resize, importFile,
+  rebuildShape, rebuildLeds, selectShape, resetView, goInside, syncUniforms, resize, importFile, setScene,
+  loadMusic: pickAudioFile,
+  useMic: () => startAudio(() => audio.useMic()),
+  useTab: () => startAudio(() => audio.useTab()),
+  playMusicFile: (file) => startAudio(() => audio.useFile(file)),
+  playPause: () => audio.togglePlay(),
+  stopAudio: () => { audio.stop(); rBoost = 0; applyFaces(); },
   openEditor: () => editor.open(custom),
   importModel: () => pickFile(importFile),
   toggleFullscreen: () => toggleFullscreen(),
@@ -317,7 +388,20 @@ syncUniforms();
 rebuildShape();
 resetView();
 resize();
-ui = createUI(state, actions, Object.keys(SHAPES), Object.keys(PATTERNS));
+ui = createUI(state, actions, Object.keys(SHAPES), Object.keys(PATTERNS), Object.keys(SCENES), audio);
+u.uPrimTex.value = inside.primTex;
+u.uObjS.value = inside.objS;
+u.uObjR.value = inside.objR;
+u.uSph.value = inside.sph;
+
+// Colour of a neon object when it follows the LED pattern: a stand-in LED at the
+// object's position, with u going round the room so patterns sweep around it.
+const objLed = { u: 0, x: 0, y: 0, z: 0, e: 0, i: 0, s: 0.5, seed: 0.5, row: 0 };
+let tNow = 0;
+function objectColour(x, y, z, i, out) {
+  Object.assign(objLed, { u: Math.atan2(z, x) / (2 * Math.PI) + 0.5, x, y, z, e: i, i, seed: (i * 0.618) % 1 });
+  return PATTERNS[state.pattern](objLed, tNow, patternParams, out);
+}
 
 // Cost is ~ pixels × bounces, so resolution is the knob that keeps fps up.
 // Drop quickly when slow; climb back slowly (after 2 good seconds).
@@ -411,7 +495,7 @@ addEventListener('pointermove', () => {
 let frames = 0, frameNo = 0, lastHud = performance.now();
 const stats = { fps: 0, ms: 0 };
 window.__sim = {
-  state, stats, actions, custom,
+  state, stats, actions, custom, audio, inside,
   get shape() { return shape; },
   toneExposure: () => renderer.toneMappingExposure,
 };
@@ -423,9 +507,41 @@ renderer.setAnimationLoop((now) => {
   u.uCamWorld.value.copy(camera.matrixWorld);
   u.uProjInv.value.copy(camera.projectionMatrixInverse);
   u.uInside.value = cameraInside();
+  tNow = now / 1000;
+  u.uTime.value = tNow;
 
-  const avg = updateLedColors(strip, PATTERNS[state.pattern], now / 1000, patternParams, state.brightness);
+  // audio → light. Calm mode halves the depth; beats are already rate-limited in audio.js.
+  audio.calm = state.calm;
+  audio.sensitivity = state.sensitivity;
+  const A = audio.update(now);
+  const react = A.active ? state.reactivity * (state.calm ? 0.5 : 1) : 0;
+  const gain = 1 + react * (1.3 * A.bass + 0.5 * A.pulse - 0.65);
+  const mod = react ? { hue: hueMatrix(react * A.mids * 1.4), sparkle: react * A.highs * 0.03 } : null;
+  bloom.strength = state.bloomStrength * (1 + react * (0.5 * A.bass + 0.4 * A.pulse));
+  if (react || rBoost) { rBoost = react * 0.06 * A.energy; applyFaces(); }
+
+  const avg = updateLedColors(strip, PATTERNS[state.pattern], tNow, patternParams, state.brightness * gain, mod);
   updateTail(avg);
+
+  // inside the mirror: creatures, trees, fireflies + water
+  const H = shape.bboxMax.y - shape.bboxMin.y;
+  const waterY = shape.bboxMin.y + state.waterLevel * H;
+  u.uWater.value = state.water;
+  u.uWaterY.value = waterY;
+  u.uWaterMin.value = state.waterReflect;
+  u.uWaterAmp.value = 0.08 * state.waterWaves;
+  u.uWaterFreq.value = 7 / Math.max(H, 0.05);
+  if (state.scene !== 'None') {
+    inside.update({
+      t: tNow, speed: state.animSpeed * (1 + 0.5 * react * A.energy), scale: state.objScale,
+      material: state.objMaterial, colour: state.objColour, colorFn: objectColour,
+      fireflies: state.fireflies, waterY: state.water ? waterY : null, gain: Math.max(0.2, gain),
+    });
+  }
+  u.uNumObjects.value = state.scene !== 'None' ? inside.numObjects : 0;
+  u.uObjDepth.value = state.objDepth;
+  u.uNeonIntensity.value = state.neonIntensity;
+  u.uNeonDots.value = state.neonDots ? Math.max(0.004, 0.035 * inside.baseScale * state.objScale) : 0;
   if (state.autoExposure && frameNo % 8 === 0) meterExposure();
   else if (!state.autoExposure && autoExp !== 1) { autoExp = 1; syncUniforms(); }
   composer.render();
@@ -438,9 +554,11 @@ renderer.setAnimationLoop((now) => {
     if (state.autoQuality) adaptQuality(stats.fps);
     const w = renderer.domElement.width, h = renderer.domElement.height;
     const tracer = shape.mode === 'mesh' ? `BVH ${shape.tris.count} tris` : 'convex';
+    const objs = u.uNumObjects.value ? ` · ${inside.numObjects} objects / ${inside.numPrims} capsules` : '';
+    const snd = A.active ? ` · ♪ ${audio.name} · ${A.beatsPerSec.toFixed(1)} beats/s${state.calm ? ' (calm)' : ''}` : '';
     hud.textContent =
       `${stats.fps.toFixed(0)} fps · ${w}×${h} · ${tracer} · ${shape.planes.length} faces · ` +
-      `${shape.edges.length} edges · ${strip.count} LEDs · ≤${state.maxBounces} bounces`;
+      `${shape.edges.length} edges · ${strip.count} LEDs · ≤${state.maxBounces} bounces${objs}${snd}`;
     frames = 0;
     lastHud = now;
   }

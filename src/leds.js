@@ -159,9 +159,17 @@ export function buildLeds(shape, { strips, ledDensity, doubleStrip, row2 }, bvhO
 const tmp = [0, 0, 0];
 const avg = [0, 0, 0];
 
+// 3×3 matrix rotating RGB colours around the grey axis by `a` radians (hue shift)
+export function hueMatrix(a) {
+  const c = Math.cos(a), s = Math.sin(a) / Math.sqrt(3), k = (1 - c) / 3;
+  return [c + k, k - s, k + s, k + s, c + k, k - s, k - s, k + s, c + k];
+}
+
 // Writes this frame's colours; returns the average LED colour (for the far-field glow).
-export function updateLedColors(strip, pattern, t, params, brightness) {
+// mod (optional, audio): { hue: hueMatrix | null, sparkle: chance per LED per frame }
+export function updateLedColors(strip, pattern, t, params, brightness, mod = null) {
   const data = strip.ledTex.image.data;
+  const H = mod?.hue, sparkle = mod?.sparkle || 0;
   avg[0] = avg[1] = avg[2] = 0;
   for (const L of strip.leds) {
     pattern(L, t, params, tmp);
@@ -170,6 +178,13 @@ export function updateLedColors(strip, pattern, t, params, brightness) {
       const s = Math.max(tmp[0], tmp[1], tmp[2]) + Math.min(tmp[0], tmp[1], tmp[2]);
       tmp[0] = s - tmp[0]; tmp[1] = s - tmp[1]; tmp[2] = s - tmp[2];
     }
+    if (H) {
+      const [x, y, z] = tmp;
+      tmp[0] = Math.max(0, H[0] * x + H[1] * y + H[2] * z);
+      tmp[1] = Math.max(0, H[3] * x + H[4] * y + H[5] * z);
+      tmp[2] = Math.max(0, H[6] * x + H[7] * y + H[8] * z);
+    }
+    if (sparkle && Math.random() < sparkle) tmp[0] = tmp[1] = tmp[2] = 1.2; // single-LED glint
     const r = tmp[0] * brightness, g = tmp[1] * brightness, b = tmp[2] * brightness;
     data[L.texIndex] = r; data[L.texIndex + 1] = g; data[L.texIndex + 2] = b; data[L.texIndex + 3] = 1;
     avg[0] += r; avg[1] += g; avg[2] += b;

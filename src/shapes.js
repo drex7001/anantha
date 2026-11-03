@@ -318,8 +318,16 @@ export function analyzeShape(raw, { fixed, size, edgeAngle = 20 }) {
   tris.forEach((tri, t) => tri.forEach((vi, k) => positions.set([P[vi * 3], P[vi * 3 + 1], P[vi * 3 + 2]], t * 9 + k * 3)));
   g.dispose();
 
+  const bboxMin = new THREE.Vector3(Infinity, Infinity, Infinity), bboxMax = bboxMin.clone().negate();
+  for (let i = 0; i < nv; i++) {
+    const v = V(i);
+    bboxMin.min(v);
+    bboxMax.max(v);
+  }
+  const flatBottom = planes.some((p) => p.n.y < -0.999);
+
   return {
-    planes, edges, convex, closed, windowFace, backFace, radius, totalArea,
+    planes, edges, convex, closed, windowFace, backFace, radius, totalArea, bboxMin, bboxMax, flatBottom,
     tris: { positions, faceIds: faceOf, count: T },
   };
 }
