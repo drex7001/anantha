@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>LED Infinity Mirror Simulator</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #hud, #toast {
+        position: fixed; left: 12px;
+        font: 12px/1.4 ui-monospace, monospace; color: #9aa3ad;
+        background: rgba(0, 0, 0, 0.55); padding: 4px 8px; border-radius: 4px;
+        pointer-events: none;
+      }
+      #hud { bottom: 10px; }
+      #toast { bottom: 40px; color: #e8e8f0; }
+
+      #editor {
+        position: fixed; inset: 0; display: grid; place-items: center;
+        background: rgba(0, 0, 0, 0.55); z-index: 10;
+        font: 13px/1.4 system-ui, sans-serif; color: #d8dbe2;
+      }
+      #editor[hidden] { display: none; }
+      .ed-panel {
+        background: #16181d; border: 1px solid #2b2f38; border-radius: 8px;
+        padding: 14px; display: grid; gap: 10px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+      }
+      .ed-head { font-weight: 600; display: flex; justify-content: space-between; gap: 16px; }
+      .ed-hint { font-weight: 400; color: #8a90a0; font-size: 12px; }
+      .ed-panel canvas { width: 440px; height: 440px; border-radius: 4px; cursor: crosshair; }
+      .ed-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .ed-foot { justify-content: flex-end; }
+      .ed-msg { margin-right: auto; color: #8a90a0; }
+      .ed-msg.ed-err { color: #ff6b6b; }
+      .ed-panel button {
+        background: #252932; color: #e8e8f0; border: 1px solid #353a46;
+        border-radius: 4px; padding: 4px 10px; cursor: pointer; font: inherit;
+      }
+      .ed-panel button:hover { background: #2f3440; }
+      .ed-panel button:disabled { opacity: 0.4; cursor: default; }
+      .ed-panel .ed-primary { background: #ff2a6d; border-color: #ff2a6d; color: #fff; }
+      .ed-n { width: 48px; background: #0b0c10; color: #e8e8f0; border: 1px solid #353a46; border-radius: 4px; }
+      .ed-thick { width: 90px; vertical-align: middle; }
+    </style>
+  </head>
+  <body>
+    <div id="hud">starting…</div>
+    <div id="toast" hidden></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
